@@ -1,30 +1,29 @@
 import asyncio
 import atexit
+from contextlib import suppress
 import copy
 import logging
 import math
-import warnings
 import weakref
-from contextlib import suppress
-from inspect import isawaitable
-
-from tornado import gen
+import warnings
 
 import dask
+from tornado import gen
 
-from ..core import CommClosedError, Status, rpc
-from ..scheduler import Scheduler
-from ..security import Security
-from ..utils import (
-    LoopRunner,
-    TimeoutError,
-    import_term,
-    parse_bytes,
-    parse_timedelta,
-    silence_logging,
-)
 from .adaptive import Adaptive
 from .cluster import Cluster
+from ..core import rpc, CommClosedError, Status
+from ..utils import (
+    LoopRunner,
+    silence_logging,
+    parse_bytes,
+    parse_timedelta,
+    import_term,
+    TimeoutError,
+)
+from ..scheduler import Scheduler
+from ..security import Security
+
 
 logger = logging.getLogger(__name__)
 
@@ -99,7 +98,7 @@ class ProcessInterface:
         self._event_finished.set()
 
     async def finished(self):
-        """Wait until the server has finished"""
+        """ Wait until the server has finished """
         await self._event_finished.wait()
 
     def __repr__(self):
@@ -339,11 +338,7 @@ class SpecCluster(Cluster):
             if to_close:
                 if self.scheduler.status == Status.running:
                     await self.scheduler_comm.retire_workers(workers=list(to_close))
-                tasks = [
-                    asyncio.create_task(self.workers[w].close())
-                    for w in to_close
-                    if w in self.workers
-                ]
+                tasks = [self.workers[w].close() for w in to_close if w in self.workers]
                 await asyncio.wait(tasks)
                 for task in tasks:  # for tornado gen.coroutine support
                     with suppress(RuntimeError):
@@ -353,6 +348,7 @@ class SpecCluster(Cluster):
                     del self.workers[name]
 
             to_open = set(self.worker_spec) - set(self.workers)
+            to_open = list(to_open)
             workers = []
             for name in to_open:
                 d = self.worker_spec[name]
@@ -414,20 +410,12 @@ class SpecCluster(Cluster):
             return
         if self.status == Status.running or self.status == Status.failed:
             self.status = Status.closing
-
-            # Need to call stop here before we close all servers to avoid having
-            # dangling tasks in the ioloop
-            with suppress(AttributeError):
-                self._adaptive.stop()
-
-            f = self.scale(0)
-            if isawaitable(f):
-                await f
+            self.scale(0)
             await self._correct_state()
             for future in self._futures:
                 await future
             async with self._lock:
-                with suppress(CommClosedError, OSError):
+                with suppress(CommClosedError):
                     if self.scheduler_comm:
                         await self.scheduler_comm.close(close_workers=True)
                     else:
@@ -455,7 +443,7 @@ class SpecCluster(Cluster):
         self._loop_runner.stop()
 
     def _threads_per_worker(self) -> int:
-        """Return the number of threads per worker for new workers"""
+        """ Return the number of threads per worker for new workers """
         if not self.new_spec:
             raise ValueError("To scale by cores= you must specify cores per worker")
 
@@ -467,7 +455,7 @@ class SpecCluster(Cluster):
             raise ValueError("To scale by cores= you must specify cores per worker")
 
     def _memory_per_worker(self) -> int:
-        """Return the memory limit per worker for new workers"""
+        """ Return the memory limit per worker for new workers """
         if not self.new_spec:
             raise ValueError(
                 "to scale by memory= your worker definition must include a memory_limit definition"
